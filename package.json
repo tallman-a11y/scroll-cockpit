@@ -10,8 +10,10 @@
   },
   "dependencies": {
     "next": "16.2.12",
+    "numcodecs": "^0.3.2",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "zarrita": "^0.7.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
