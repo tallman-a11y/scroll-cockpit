@@ -9,11 +9,11 @@ const MAX_TILES = 800; // LRU cap ≈ 50 MB decoded
 const MAX_INFLIGHT = 12;
 
 function initialParams() {
-  if (typeof window === "undefined") return { source: 0, zoom: 1 };
+  if (typeof window === "undefined") return { source: 0, zoom: 1, rel: false };
   const q = new URLSearchParams(window.location.search);
   const s = Math.min(Number(q.get("source") ?? 0) || 0, SOURCES.length - 1);
   const zoom = Math.max(Number(q.get("zoom")) || 1, 0.1);
-  return { source: s, zoom };
+  return { source: s, zoom, rel: q.get("rel") === "1" };
 }
 
 export default function ScrollViewer() {
@@ -27,6 +27,10 @@ export default function ScrollViewer() {
   const [status, setStatus] = useState("connecting…");
   const [inkOpacity, setInkOpacity] = useState(0.7);
   const [inkVisible, setInkVisible] = useState(true);
+  const [relVisible, setRelVisible] = useState(init.rel);
+  const relCanvas = useRef<HTMLCanvasElement | null>(null);
+  const relState = useRef(init.rel);
+  relState.current = relVisible;
 
   const view = useRef({ x: 0, y: 0, scale: 1 });
   const shapes = useRef(new Map<number, number[]>()); // level -> [d,h,w]
@@ -138,6 +142,12 @@ export default function ScrollViewer() {
       }
     }
 
+    // reliability heatmap (level-3 aligned, 8x world scale)
+    if (source.reliability && relState.current && relCanvas.current) {
+      const rc = relCanvas.current;
+      ctx.drawImage(rc, 0, 0, rc.width * 8, rc.height * 8);
+    }
+
     // ink overlay (segment sources): draw finest available overlay in world space
     const ink = inkState.current;
     if (source.overlay && ink.visible && !flickerHeld.current) {
@@ -198,6 +208,21 @@ export default function ScrollViewer() {
         x: (canvas.width - world.current.w * scale) / 2,
         y: (canvas.height - world.current.h * scale) / 2,
       };
+
+      // load reliability heatmap
+      relCanvas.current = null;
+      if (source.reliability) {
+        const rim = new window.Image();
+        rim.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = rim.width;
+          c.height = rim.height;
+          c.getContext("2d")!.drawImage(rim, 0, 0);
+          relCanvas.current = c;
+          requestAnimationFrame(drawRef.current);
+        };
+        rim.src = source.reliability;
+      }
 
       // load tinted overlays
       for (const l of [3, 4, 5]) {
@@ -338,6 +363,20 @@ export default function ScrollViewer() {
           <span className="text-neutral-500">
             hold F to flicker ink off — real strokes snap in and out; texture stays
           </span>
+          {source.reliability && (
+            <label className="ml-auto flex items-center gap-2 text-emerald-400">
+              <input
+                type="checkbox"
+                className="accent-emerald-400"
+                checked={relVisible}
+                onChange={(e) => {
+                  setRelVisible(e.target.checked);
+                  requestAnimationFrame(drawRef.current);
+                }}
+              />
+              reliability (green = trust, red = wrecked)
+            </label>
+          )}
         </div>
       )}
       <div className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2 text-sm">

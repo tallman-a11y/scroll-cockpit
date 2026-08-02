@@ -13,6 +13,8 @@ export interface ScrollSource {
   depthScales: boolean;
   /** Optional per-level ink prediction overlay images: level -> image URL. */
   overlay?: (level: number) => string | null;
+  /** Optional reliability heatmap PNG (level-3 aligned, world scale 8x). */
+  reliability?: string;
 }
 
 export const SOURCES: ScrollSource[] = [
@@ -31,6 +33,7 @@ export const SOURCES: ScrollSource[] = [
     depthScales: false,
     overlay: (level) =>
       level >= 3 && level <= 5 ? `/api/data/pred_pyramid/l${level}.png` : null,
+    reliability: "/api/data/reliability/l3.png",
   },
 ];
 
