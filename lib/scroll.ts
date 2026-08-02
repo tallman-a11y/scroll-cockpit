@@ -7,6 +7,8 @@ export interface ScrollSource {
   /** Base URL of the multiscale zarr group (levels 0..N as children). */
   url: string;
   levels: number[];
+  /** Optional per-level ink prediction overlay images: level -> image URL. */
+  overlay?: (level: number) => string | null;
 }
 
 export const SOURCES: ScrollSource[] = [
@@ -21,6 +23,8 @@ export const SOURCES: ScrollSource[] = [
     name: "Segment w00_20231016151002 (our ink run) — local",
     url: "/api/data/w00_20231016151002.zarr",
     levels: [5, 4, 3, 2],
+    overlay: (level) =>
+      level >= 3 && level <= 5 ? `/api/data/pred_pyramid/l${level}.png` : null,
   },
 ];
 

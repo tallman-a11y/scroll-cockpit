@@ -6,18 +6,38 @@ import { SOURCES, fetchSlice, levelShape } from "@/lib/scroll";
 
 const DEFAULT_LEVEL = 4; // 16x downsample: fast first paint on any connection
 
+function initialParams() {
+  if (typeof window === "undefined") return { source: 0, level: DEFAULT_LEVEL };
+  const q = new URLSearchParams(window.location.search);
+  const s = Math.min(Number(q.get("source") ?? 0) || 0, SOURCES.length - 1);
+  const levels = SOURCES[s].levels;
+  const lv = Number(q.get("level"));
+  const fallback = levels.includes(DEFAULT_LEVEL) ? DEFAULT_LEVEL : levels[0];
+  return {
+    source: s,
+    level: levels.includes(lv) ? lv : fallback,
+  };
+}
+
 export default function ScrollViewer() {
-  const [sourceIdx, setSourceIdx] = useState(0);
+  const [init] = useState(initialParams);
+  const [sourceIdx, setSourceIdx] = useState(init.source);
   const source = SOURCES[sourceIdx];
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [level, setLevel] = useState(DEFAULT_LEVEL);
+  const [level, setLevel] = useState(init.level);
   const [depth, setDepth] = useState(0);
   const [z, setZ] = useState(0);
   const [status, setStatus] = useState("connecting…");
   const [loading, setLoading] = useState(false);
+  const [inkOpacity, setInkOpacity] = useState(0.7);
+  const [inkVisible, setInkVisible] = useState(true);
+  const flickerHeld = useRef(false);
   // pan/zoom state kept in refs to avoid re-render churn during drag
   const view = useRef({ x: 0, y: 0, scale: 1 });
   const slice = useRef<ImageData | null>(null);
+  const overlayImg = useRef<HTMLCanvasElement | null>(null);
+  const inkState = useRef({ opacity: 0.7, visible: true });
+  inkState.current = { opacity: inkOpacity, visible: inkVisible };
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -37,8 +57,69 @@ export default function ScrollViewer() {
     ctx.translate(x, y);
     ctx.scale(scale, scale);
     ctx.drawImage(off, 0, 0);
+    const ink = inkState.current;
+    if (overlayImg.current && ink.visible && !flickerHeld.current) {
+      ctx.globalAlpha = ink.opacity;
+      ctx.drawImage(overlayImg.current, 0, 0);
+      ctx.globalAlpha = 1;
+    }
     ctx.restore();
   }, []);
+
+  // load + tint the prediction overlay for the current source/level
+  useEffect(() => {
+    overlayImg.current = null;
+    const url = source.overlay?.(level);
+    if (!url) {
+      draw();
+      return;
+    }
+    const im = new window.Image();
+    im.onload = () => {
+      // tint: prediction intensity -> amber, transparent where no ink
+      const c = document.createElement("canvas");
+      c.width = im.width;
+      c.height = im.height;
+      const cctx = c.getContext("2d")!;
+      cctx.drawImage(im, 0, 0);
+      const d = cctx.getImageData(0, 0, c.width, c.height);
+      for (let i = 0; i < d.data.length; i += 4) {
+        const v = d.data[i];
+        d.data[i] = 255;      // R
+        d.data[i + 1] = 176;  // G
+        d.data[i + 2] = 32;   // B
+        // alpha: threshold weak predictions so papyrus texture stays clean,
+        // then steepen so confident strokes read solid
+        d.data[i + 3] = v < 72 ? 0 : Math.min(255, (v - 72) * 1.8);
+      }
+      cctx.putImageData(d, 0, 0);
+      overlayImg.current = c;
+      draw();
+    };
+    im.src = url;
+  }, [source, level, draw]);
+
+  // F key = flicker the ink layer off while held (stroke-vs-texture check)
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === "f" && !flickerHeld.current) {
+        flickerHeld.current = true;
+        draw();
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === "f") {
+        flickerHeld.current = false;
+        draw();
+      }
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, [draw]);
 
   const load = useCallback(
     async (lv: number, zi: number) => {
@@ -175,6 +256,34 @@ export default function ScrollViewer() {
         </label>
         <span className={loading ? "text-amber-400" : "text-neutral-500"}>{status}</span>
       </header>
+      {source.overlay && (
+        <div className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2 text-sm">
+          <label className="flex items-center gap-2 text-amber-400">
+            <input
+              type="checkbox"
+              className="accent-amber-400"
+              checked={inkVisible}
+              onChange={(e) => {
+                setInkVisible(e.target.checked);
+                requestAnimationFrame(draw);
+              }}
+            />
+            ink layer
+          </label>
+          <input
+            className="w-48 accent-amber-400"
+            type="range"
+            min={0}
+            max={100}
+            value={inkOpacity * 100}
+            onChange={(e) => {
+              setInkOpacity(Number(e.target.value) / 100);
+              requestAnimationFrame(draw);
+            }}
+          />
+          <span className="text-neutral-500">hold F to flicker ink off — real strokes snap in and out; texture stays</span>
+        </div>
+      )}
       <div className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2 text-sm">
         <span className="w-24 text-neutral-400">depth z={z}</span>
         <input
