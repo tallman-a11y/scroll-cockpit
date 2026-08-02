@@ -30,7 +30,12 @@ export function openLevel(source: ScrollSource, level: number) {
   const key = `${source.url}/${level}`;
   let p = arrayCache.get(key);
   if (!p) {
-    const store = new zarr.FetchStore(key);
+    // zarrita's FetchStore needs an absolute URL; resolve relative paths
+    // (local /api/data sources) against the current origin.
+    const abs = key.startsWith("http")
+      ? key
+      : new URL(key, window.location.origin).href;
+    const store = new zarr.FetchStore(abs);
     p = zarr.open.v2(store, { kind: "array" });
     arrayCache.set(key, p);
   }

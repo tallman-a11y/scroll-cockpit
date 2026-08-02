@@ -69,6 +69,15 @@ export default function ScrollViewer() {
     [source, draw]
   );
 
+  // Unregister any stale service workers left on localhost:3000 by other
+  // local apps — they intercept fetches and poison caching.
+  useEffect(() => {
+    navigator.serviceWorker
+      ?.getRegistrations()
+      .then((rs) => rs.forEach((r) => r.unregister()))
+      .catch(() => {});
+  }, []);
+
   // init: read shape, center view, load middle slice
   useEffect(() => {
     (async () => {
