@@ -14,7 +14,10 @@ Streams CT scan chunks of the Herculaneum scrolls **directly from the challenge'
   (marks persist in localStorage; zarr label export is next)
 - ✅ Local-dataset route for your own segments and predictions during dev
 - ✅ Shareable URLs: `?source=&zoom=&rel=`
-- 🔜 Verdicts → training-label zarr export (koine_machines format)
+- ✅ Verdicts → training labels: `scripts/marks_to_labels.py` converts exported marks into
+  staged `*_inklabels.zarr` + `*_supervision_mask.zarr` copies (koine_machines convention:
+  z=32 surface plane, pyramid regenerated, originals untouched). "ink" = confirmed pseudo-label,
+  "not" = negative supervision. Point a training config's `segments_path` at the staging folder.
 - 🔜 Triage queue seeded by reliability heatmap; heatmap scoring v2
 
 ## Why
