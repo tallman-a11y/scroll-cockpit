@@ -15,6 +15,15 @@ export interface ScrollSource {
   overlay?: (level: number) => string | null;
   /** Optional reliability heatmap PNG (level-3 aligned, world scale 8x). */
   reliability?: string;
+  /** Source depends on this machine's disk (dev-only); hidden on public deploys. */
+  localOnly?: boolean;
+}
+
+export function visibleSources(): ScrollSource[] {
+  const isLocal =
+    typeof window !== "undefined" &&
+    ["localhost", "127.0.0.1"].includes(window.location.hostname);
+  return SOURCES.filter((s) => !s.localOnly || isLocal);
 }
 
 export const SOURCES: ScrollSource[] = [
@@ -31,6 +40,7 @@ export const SOURCES: ScrollSource[] = [
     url: "/api/data/w00_20231016151002.zarr",
     levels: [5, 4, 3, 2, 1, 0],
     depthScales: false,
+    localOnly: true,
     overlay: (level) =>
       level >= 3 && level <= 5 ? `/api/data/pred_pyramid/l${level}.png` : null,
     reliability: "/api/data/reliability/l3.png",

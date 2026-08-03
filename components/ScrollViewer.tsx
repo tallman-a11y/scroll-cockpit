@@ -5,7 +5,7 @@
 // - Review: Shift+click marks a spot; 1/2/3 = ink / not ink / unsure;
 //   N/P next/prev; Delete removes; queue panel; JSON export.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SOURCES, TILE, getTile, levelShape } from "@/lib/scroll";
+import { TILE, getTile, levelShape, visibleSources } from "@/lib/scroll";
 
 const MAX_TILES = 800;
 const MAX_INFLIGHT = 12;
@@ -28,7 +28,7 @@ const VERDICT_COLORS: Record<string, string> = {
 
 function initialParams() {
   const q = new URLSearchParams(window.location.search);
-  const s = Math.min(Number(q.get("source") ?? 0) || 0, SOURCES.length - 1);
+  const s = Math.min(Number(q.get("source") ?? 0) || 0, visibleSources().length - 1);
   const zoom = Math.max(Number(q.get("zoom")) || 1, 0.1);
   return { source: s, zoom, rel: q.get("rel") === "1" };
 }
@@ -43,7 +43,8 @@ export default function ScrollViewer() {
 function Viewer() {
   const [init] = useState(initialParams);
   const [sourceIdx, setSourceIdx] = useState(init.source);
-  const source = SOURCES[sourceIdx];
+  const sources = visibleSources();
+  const source = sources[sourceIdx];
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const [worldDepth, setWorldDepth] = useState(0);
@@ -499,7 +500,7 @@ function Viewer() {
           value={sourceIdx}
           onChange={(e) => setSourceIdx(Number(e.target.value))}
         >
-          {SOURCES.map((s, i) => (
+          {sources.map((s, i) => (
             <option key={s.url} value={i}>
               {s.name}
             </option>
