@@ -4,15 +4,18 @@ A zero-install, browser-based viewer (and soon: review/annotation tool) for [Ves
 
 Streams CT scan chunks of the Herculaneum scrolls **directly from the challenge's public data servers into your browser** — no backend, no downloads, no toolchain. Open a URL, scrub through a 2,000-year-old scroll.
 
-## Status: v0 (day 1)
+## Status: v1 (day 2)
 
 - ✅ Direct browser streaming of OME-Zarr scroll volumes (`zarrita` + blosc/zstd decode in JS)
-- ✅ Pan / zoom / depth-scrub across pyramid levels
-- ✅ Local-dataset route for viewing your own segments and predictions during dev
-- 🔜 Viewport tiling (stream only what's visible at high res)
-- 🔜 Layers: ink predictions + labels over surface volume, opacity + A/B flicker
-- 🔜 Keyboard review loop: confirm / reject / unsure → training-label export
-- 🔜 Review triage ordered by text-line layout priors
+- ✅ Tiled rendering with automatic level-of-detail — whole-scroll to fiber-level (128px tiles, LRU cache)
+- ✅ Layers: ink prediction overlay (opacity + hold-F flicker) and reliability heatmap
+  (per-region text-line-rhythm score; green = trust, red = wrecked zone)
+- ✅ Review loop: Shift+click to mark → 1/2/3 verdict keys with auto-advance → JSON export
+  (marks persist in localStorage; zarr label export is next)
+- ✅ Local-dataset route for your own segments and predictions during dev
+- ✅ Shareable URLs: `?source=&zoom=&rel=`
+- 🔜 Verdicts → training-label zarr export (koine_machines format)
+- 🔜 Triage queue seeded by reliability heatmap; heatmap scoring v2
 
 ## Why
 

@@ -1,15 +1,32 @@
 "use client";
-// Tiled scroll viewer: map-style streaming with automatic level-of-detail.
-// World space = full-resolution pixel coordinates; zoom picks the pyramid
-// level, and only visible 128px tiles are fetched and cached (LRU).
+// Tiled scroll viewer + review loop.
+// - Map-style streaming with automatic level-of-detail (world space = full-res px)
+// - Layers: surface tiles, ink prediction overlay, reliability heatmap
+// - Review: Shift+click marks a spot; 1/2/3 = ink / not ink / unsure;
+//   N/P next/prev; Delete removes; queue panel; JSON export.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SOURCES, TILE, getTile, levelShape } from "@/lib/scroll";
 
-const MAX_TILES = 800; // LRU cap ≈ 50 MB decoded
+const MAX_TILES = 800;
 const MAX_INFLIGHT = 12;
 
+interface Mark {
+  id: string;
+  x: number; // world coords (full-res px)
+  y: number;
+  z: number; // depth when marked
+  verdict: null | "ink" | "not" | "unsure";
+  ts: number;
+}
+
+const VERDICT_COLORS: Record<string, string> = {
+  ink: "#34d399",
+  not: "#f87171",
+  unsure: "#a3a3a3",
+  pending: "#fbbf24",
+};
+
 function initialParams() {
-  if (typeof window === "undefined") return { source: 0, zoom: 1, rel: false };
   const q = new URLSearchParams(window.location.search);
   const s = Math.min(Number(q.get("source") ?? 0) || 0, SOURCES.length - 1);
   const zoom = Math.max(Number(q.get("zoom")) || 1, 0.1);
@@ -17,6 +34,13 @@ function initialParams() {
 }
 
 export default function ScrollViewer() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return <div className="h-screen bg-neutral-950" />;
+  return <Viewer />;
+}
+
+function Viewer() {
   const [init] = useState(initialParams);
   const [sourceIdx, setSourceIdx] = useState(init.source);
   const source = SOURCES[sourceIdx];
@@ -28,21 +52,46 @@ export default function ScrollViewer() {
   const [inkOpacity, setInkOpacity] = useState(0.7);
   const [inkVisible, setInkVisible] = useState(true);
   const [relVisible, setRelVisible] = useState(init.rel);
-  const relCanvas = useRef<HTMLCanvasElement | null>(null);
-  const relState = useRef(init.rel);
-  relState.current = relVisible;
+  const [marks, setMarks] = useState<Mark[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const view = useRef({ x: 0, y: 0, scale: 1 });
-  const shapes = useRef(new Map<number, number[]>()); // level -> [d,h,w]
+  const shapes = useRef(new Map<number, number[]>());
   const world = useRef({ d: 0, h: 0, w: 0, finest: 0 });
   const tiles = useRef(new Map<string, HTMLCanvasElement>());
   const inflight = useRef(new Set<string>());
   const overlays = useRef(new Map<number, HTMLCanvasElement>());
+  const relCanvas = useRef<HTMLCanvasElement | null>(null);
   const zRef = useRef(0);
   const flickerHeld = useRef(false);
   const inkState = useRef({ opacity: 0.7, visible: true });
+  const relState = useRef(init.rel);
+  const marksRef = useRef<Mark[]>([]);
+  const selectedRef = useRef<string | null>(null);
   inkState.current = { opacity: inkOpacity, visible: inkVisible };
+  relState.current = relVisible;
   zRef.current = z;
+  marksRef.current = marks;
+  selectedRef.current = selectedId;
+
+  const storageKey = `cockpit-marks::${source.url}`;
+
+  // load/save marks
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      setMarks(raw ? (JSON.parse(raw) as Mark[]) : []);
+    } catch {
+      setMarks([]);
+    }
+    setSelectedId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceIdx]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(marks));
+    } catch {}
+  }, [marks, storageKey]);
 
   const pickLevel = useCallback(() => {
     const ideal = Math.floor(Math.log2(1 / view.current.scale));
@@ -82,7 +131,6 @@ export default function ScrollViewer() {
     const [, H, W] = shape;
     const { x: vx, y: vy, scale: vs } = view.current;
 
-    // visible world rect -> level-space tile range
     const wx0 = Math.max(0, -vx / vs);
     const wy0 = Math.max(0, -vy / vs);
     const wx1 = Math.min(world.current.w, (canvas.width - vx) / vs);
@@ -102,7 +150,6 @@ export default function ScrollViewer() {
         const key = `${sourceIdx}/${L}/${zl}/${ty}/${tx}`;
         const tile = tiles.current.get(key);
         if (tile) {
-          // LRU touch
           tiles.current.delete(key);
           tiles.current.set(key, tile);
           ctx.drawImage(tile, tx * TILE * f, ty * TILE * f, tile.width * f, tile.height * f);
@@ -142,13 +189,11 @@ export default function ScrollViewer() {
       }
     }
 
-    // reliability heatmap (level-3 aligned, 8x world scale)
     if (source.reliability && relState.current && relCanvas.current) {
       const rc = relCanvas.current;
       ctx.drawImage(rc, 0, 0, rc.width * 8, rc.height * 8);
     }
 
-    // ink overlay (segment sources): draw finest available overlay in world space
     const ink = inkState.current;
     if (source.overlay && ink.visible && !flickerHeld.current) {
       const oLevels = [3, 4, 5].filter((l) => source.overlay!(l));
@@ -159,6 +204,21 @@ export default function ScrollViewer() {
         ctx.drawImage(oc, 0, 0, oc.width * 2 ** oL, oc.height * 2 ** oL);
         ctx.globalAlpha = 1;
       }
+    }
+
+    // marks
+    for (const m of marksRef.current) {
+      const r = 16 / vs;
+      const color = VERDICT_COLORS[m.verdict ?? "pending"];
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, r, 0, Math.PI * 2);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = (m.id === selectedRef.current ? 5 : 2.5) / vs;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, 2 / vs, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
     }
     ctx.restore();
 
@@ -171,13 +231,44 @@ export default function ScrollViewer() {
   const drawRef = useRef(draw);
   drawRef.current = draw;
 
-  // init source: shapes for all levels, world dims, fit view, mid depth
+  const flyTo = useCallback((m: Mark) => {
+    const canvas = canvasRef.current!;
+    const vs = Math.max(view.current.scale, 0.5); // at least level-1-ish detail
+    view.current = {
+      scale: vs,
+      x: canvas.width / 2 - m.x * vs,
+      y: canvas.height / 2 - m.y * vs,
+    };
+    setSelectedId(m.id);
+    requestAnimationFrame(drawRef.current);
+  }, []);
+
+  const setVerdict = useCallback((v: "ink" | "not" | "unsure") => {
+    const sel = selectedRef.current;
+    if (!sel) return;
+    setMarks((ms) => ms.map((m) => (m.id === sel ? { ...m, verdict: v } : m)));
+    // auto-advance to next pending mark
+    const list = marksRef.current;
+    const idx = list.findIndex((m) => m.id === sel);
+    const next =
+      list.slice(idx + 1).find((m) => m.verdict === null && m.id !== sel) ??
+      list.find((m) => m.verdict === null && m.id !== sel);
+    if (next) flyToRef.current(next);
+    requestAnimationFrame(drawRef.current);
+  }, []);
+  const flyToRef = useRef(flyTo);
+  flyToRef.current = flyTo;
+  const setVerdictRef = useRef(setVerdict);
+  setVerdictRef.current = setVerdict;
+
+  // init source
   useEffect(() => {
     let alive = true;
     (async () => {
       setStatus("connecting…");
       tiles.current.clear();
       overlays.current.clear();
+      relCanvas.current = null;
       const entries = await Promise.all(
         source.levels.map(async (l) => [l, await levelShape(source, l)] as const)
       );
@@ -209,8 +300,6 @@ export default function ScrollViewer() {
         y: (canvas.height - world.current.h * scale) / 2,
       };
 
-      // load reliability heatmap
-      relCanvas.current = null;
       if (source.reliability) {
         const rim = new window.Image();
         rim.onload = () => {
@@ -224,7 +313,6 @@ export default function ScrollViewer() {
         rim.src = source.reliability;
       }
 
-      // load tinted overlays
       for (const l of [3, 4, 5]) {
         const url = source.overlay?.(l);
         if (!url) continue;
@@ -261,14 +349,56 @@ export default function ScrollViewer() {
   useEffect(() => {
     const canvas = canvasRef.current!;
     let dragging = false;
+    let moved = 0;
     let last = { x: 0, y: 0 };
+    const toWorld = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const { x: vx, y: vy, scale: vs } = view.current;
+      return {
+        x: (e.clientX - rect.left - vx) / vs,
+        y: (e.clientY - rect.top - vy) / vs,
+      };
+    };
     const down = (e: MouseEvent) => {
       dragging = true;
+      moved = 0;
       last = { x: e.clientX, y: e.clientY };
     };
-    const up = () => (dragging = false);
+    const up = (e: MouseEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      if (moved > 5 || e.target !== canvas) return;
+      const w = toWorld(e);
+      if (e.shiftKey) {
+        const m: Mark = {
+          id: Math.random().toString(36).slice(2, 10),
+          x: Math.round(w.x),
+          y: Math.round(w.y),
+          z: zRef.current,
+          verdict: null,
+          ts: Date.now(),
+        };
+        setMarks((ms) => [...ms, m]);
+        setSelectedId(m.id);
+      } else {
+        // select nearest mark within 24 screen px
+        const vs = view.current.scale;
+        let best: Mark | null = null;
+        let bestD = 24 / vs;
+        for (const m of marksRef.current) {
+          const d = Math.hypot(m.x - w.x, m.y - w.y);
+          if (d < bestD) {
+            bestD = d;
+            best = m;
+          }
+        }
+        setSelectedId(best ? best.id : null);
+      }
+      requestAnimationFrame(drawRef.current);
+    };
     const move = (e: MouseEvent) => {
       if (!dragging) return;
+      moved += Math.abs(e.clientX - last.x) + Math.abs(e.clientY - last.y);
       view.current.x += e.clientX - last.x;
       view.current.y += e.clientY - last.y;
       last = { x: e.clientX, y: e.clientY };
@@ -287,12 +417,35 @@ export default function ScrollViewer() {
       requestAnimationFrame(drawRef.current);
     };
     const key = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() === "f") {
+      const k = e.key.toLowerCase();
+      if (k === "f") {
         const held = e.type === "keydown";
         if (flickerHeld.current !== held) {
           flickerHeld.current = held;
           requestAnimationFrame(drawRef.current);
         }
+        return;
+      }
+      if (e.type !== "keydown") return;
+      if (k === "1") setVerdictRef.current("ink");
+      else if (k === "2") setVerdictRef.current("not");
+      else if (k === "3") setVerdictRef.current("unsure");
+      else if (k === "delete" || k === "backspace") {
+        const sel = selectedRef.current;
+        if (sel) {
+          setMarks((ms) => ms.filter((m) => m.id !== sel));
+          setSelectedId(null);
+          requestAnimationFrame(drawRef.current);
+        }
+      } else if (k === "n" || k === "p") {
+        const list = marksRef.current;
+        if (!list.length) return;
+        const idx = list.findIndex((m) => m.id === selectedRef.current);
+        const next =
+          k === "n"
+            ? list[(idx + 1 + list.length) % list.length]
+            : list[(idx - 1 + list.length) % list.length];
+        flyToRef.current(next);
       }
     };
     const resize = () => {
@@ -317,6 +470,25 @@ export default function ScrollViewer() {
       window.removeEventListener("resize", resize);
     };
   }, []);
+
+  const exportMarks = () => {
+    const payload = {
+      tool: "scroll-cockpit",
+      source: source.url,
+      exported: new Date().toISOString(),
+      marks: marks,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `cockpit-marks-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const pending = marks.filter((m) => m.verdict === null).length;
 
   return (
     <div className="flex h-screen flex-col bg-neutral-950 text-neutral-200">
@@ -361,7 +533,7 @@ export default function ScrollViewer() {
             }}
           />
           <span className="text-neutral-500">
-            hold F to flicker ink off — real strokes snap in and out; texture stays
+            hold F to flicker · Shift+click to mark · 1 ink / 2 not / 3 unsure · N next
           </span>
           {source.reliability && (
             <label className="ml-auto flex items-center gap-2 text-emerald-400">
@@ -374,7 +546,7 @@ export default function ScrollViewer() {
                   requestAnimationFrame(drawRef.current);
                 }}
               />
-              reliability (green = trust, red = wrecked)
+              reliability
             </label>
           )}
         </div>
@@ -395,7 +567,67 @@ export default function ScrollViewer() {
           }}
         />
       </div>
-      <canvas ref={canvasRef} className="flex-1 cursor-grab active:cursor-grabbing" />
+      <div className="flex min-h-0 flex-1">
+        <canvas ref={canvasRef} className="min-w-0 flex-1 cursor-grab active:cursor-grabbing" />
+        <aside className="flex w-72 flex-col border-l border-neutral-800 bg-neutral-925">
+          <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-2 text-sm">
+            <span className="font-medium text-neutral-300">
+              Review queue{" "}
+              <span className="text-neutral-500">
+                ({marks.length - pending}/{marks.length})
+              </span>
+            </span>
+            <div className="flex gap-2">
+              <button
+                className="rounded bg-neutral-800 px-2 py-1 text-xs hover:bg-neutral-700"
+                onClick={exportMarks}
+                disabled={!marks.length}
+              >
+                export
+              </button>
+              <button
+                className="rounded bg-neutral-800 px-2 py-1 text-xs hover:bg-neutral-700"
+                onClick={() => {
+                  setMarks([]);
+                  setSelectedId(null);
+                  requestAnimationFrame(drawRef.current);
+                }}
+                disabled={!marks.length}
+              >
+                clear
+              </button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {marks.length === 0 && (
+              <p className="px-3 py-4 text-xs leading-5 text-neutral-500">
+                Shift+click anywhere on the papyrus to mark a spot for review. Then
+                press 1 (real ink), 2 (not ink), or 3 (unsure) — the view advances
+                to the next pending mark automatically.
+              </p>
+            )}
+            {marks.map((m, i) => (
+              <button
+                key={m.id}
+                className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-neutral-900 ${
+                  m.id === selectedId ? "bg-neutral-900" : ""
+                }`}
+                onClick={() => flyTo(m)}
+              >
+                <span
+                  className="inline-block h-2.5 w-2.5 rounded-full"
+                  style={{ background: VERDICT_COLORS[m.verdict ?? "pending"] }}
+                />
+                <span className="text-neutral-300">#{i + 1}</span>
+                <span className="text-neutral-500">
+                  ({m.x}, {m.y}) z{m.z}
+                </span>
+                <span className="ml-auto text-neutral-400">{m.verdict ?? "—"}</span>
+              </button>
+            ))}
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }
