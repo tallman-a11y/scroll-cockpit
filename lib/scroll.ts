@@ -17,6 +17,9 @@ export interface ScrollSource {
   reliability?: string;
   /** Source depends on this machine's disk (dev-only); hidden on public deploys. */
   localOnly?: boolean;
+  /** Static single-plane source: per-level pre-rendered images instead of a
+   * zarr volume (used for the public demo segment; no depth axis). */
+  staticImages?: (level: number) => string;
 }
 
 export function visibleSources(): ScrollSource[] {
@@ -44,6 +47,18 @@ export const SOURCES: ScrollSource[] = [
     overlay: (level) =>
       level >= 3 && level <= 5 ? `/api/data/pred_pyramid/l${level}.png` : null,
     reliability: "/api/data/reliability/l3.png",
+  },
+  {
+    // Public ink-review demo: pre-rendered surface plane (z=32) + our model's
+    // predictions + reliability heatmap, shipped as static assets.
+    name: "Segment 20231016151002 — ink review demo (our model's predictions)",
+    url: "demo://w00_20231016151002",
+    levels: [5, 4, 3],
+    depthScales: false,
+    staticImages: (level) => `/demo/surface_l${level}.png`,
+    overlay: (level) =>
+      level >= 3 && level <= 5 ? `/demo/pred_l${level}.png` : null,
+    reliability: "/demo/reliability_l3.png",
   },
 ];
 

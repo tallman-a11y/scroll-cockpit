@@ -62,6 +62,8 @@ function Viewer() {
   const tiles = useRef(new Map<string, HTMLCanvasElement>());
   const inflight = useRef(new Set<string>());
   const overlays = useRef(new Map<number, HTMLCanvasElement>());
+  const staticImgs = useRef(new Map<number, HTMLImageElement>());
+  const staticLoading = useRef(new Set<number>());
   const relCanvas = useRef<HTMLCanvasElement | null>(null);
   const zRef = useRef(0);
   const flickerHeld = useRef(false);
@@ -125,12 +127,76 @@ function Viewer() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const L = pickLevel();
+    const { x: vx, y: vy, scale: vs } = view.current;
+
+    const drawOverlaysAndMarks = (c: CanvasRenderingContext2D, scale: number) => {
+      if (source.reliability && relState.current && relCanvas.current) {
+        const rc = relCanvas.current;
+        c.drawImage(rc, 0, 0, rc.width * 8, rc.height * 8);
+      }
+      const ink = inkState.current;
+      if (source.overlay && ink.visible && !flickerHeld.current) {
+        const oLevels = [3, 4, 5].filter((l) => source.overlay!(l));
+        const oL = oLevels.find((l) => overlays.current.has(l));
+        if (oL !== undefined) {
+          const oc = overlays.current.get(oL)!;
+          c.globalAlpha = ink.opacity;
+          c.drawImage(oc, 0, 0, oc.width * 2 ** oL, oc.height * 2 ** oL);
+          c.globalAlpha = 1;
+        }
+      }
+      for (const m of marksRef.current) {
+        const r = 16 / scale;
+        const color = VERDICT_COLORS[m.verdict ?? "pending"];
+        c.beginPath();
+        c.arc(m.x, m.y, r, 0, Math.PI * 2);
+        c.strokeStyle = color;
+        c.lineWidth = (m.id === selectedRef.current ? 5 : 2.5) / scale;
+        c.stroke();
+        c.beginPath();
+        c.arc(m.x, m.y, 2 / scale, 0, Math.PI * 2);
+        c.fillStyle = color;
+        c.fill();
+      }
+    };
+
+    if (source.staticImages) {
+      ctx.save();
+      ctx.translate(vx, vy);
+      ctx.scale(vs, vs);
+      const img = staticImgs.current.get(L);
+      if (img) {
+        ctx.drawImage(img, 0, 0, img.width * 2 ** L, img.height * 2 ** L);
+      } else {
+        // draw any loaded level as a stand-in, then fetch the wanted one
+        for (const l of [...source.levels].sort((a, b) => b - a)) {
+          const im2 = staticImgs.current.get(l);
+          if (im2) {
+            ctx.drawImage(im2, 0, 0, im2.width * 2 ** l, im2.height * 2 ** l);
+            break;
+          }
+        }
+        if (!staticLoading.current.has(L)) {
+          staticLoading.current.add(L);
+          const im = new window.Image();
+          im.onload = () => {
+            staticImgs.current.set(L, im);
+            requestAnimationFrame(drawRef.current);
+          };
+          im.src = source.staticImages(L);
+        }
+      }
+      drawOverlaysAndMarks(ctx, vs);
+      ctx.restore();
+      setStatus(`level ${L} · ${Math.round(vs * 100)}%`);
+      return;
+    }
+
     const zl = zAtLevel(L);
     const f = 2 ** L;
     const shape = shapes.current.get(L);
     if (!shape) return;
     const [, H, W] = shape;
-    const { x: vx, y: vy, scale: vs } = view.current;
 
     const wx0 = Math.max(0, -vx / vs);
     const wy0 = Math.max(0, -vy / vs);
@@ -190,37 +256,7 @@ function Viewer() {
       }
     }
 
-    if (source.reliability && relState.current && relCanvas.current) {
-      const rc = relCanvas.current;
-      ctx.drawImage(rc, 0, 0, rc.width * 8, rc.height * 8);
-    }
-
-    const ink = inkState.current;
-    if (source.overlay && ink.visible && !flickerHeld.current) {
-      const oLevels = [3, 4, 5].filter((l) => source.overlay!(l));
-      const oL = oLevels.find((l) => overlays.current.has(l));
-      if (oL !== undefined) {
-        const oc = overlays.current.get(oL)!;
-        ctx.globalAlpha = ink.opacity;
-        ctx.drawImage(oc, 0, 0, oc.width * 2 ** oL, oc.height * 2 ** oL);
-        ctx.globalAlpha = 1;
-      }
-    }
-
-    // marks
-    for (const m of marksRef.current) {
-      const r = 16 / vs;
-      const color = VERDICT_COLORS[m.verdict ?? "pending"];
-      ctx.beginPath();
-      ctx.arc(m.x, m.y, r, 0, Math.PI * 2);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = (m.id === selectedRef.current ? 5 : 2.5) / vs;
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(m.x, m.y, 2 / vs, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-    }
+    drawOverlaysAndMarks(ctx, vs);
     ctx.restore();
 
     setStatus(
@@ -269,21 +305,40 @@ function Viewer() {
       setStatus("connecting…");
       tiles.current.clear();
       overlays.current.clear();
+      staticImgs.current.clear();
+      staticLoading.current.clear();
       relCanvas.current = null;
-      const entries = await Promise.all(
-        source.levels.map(async (l) => [l, await levelShape(source, l)] as const)
-      );
-      if (!alive) return;
-      shapes.current = new Map(entries);
-      const finest = Math.min(...source.levels);
-      const [fd, fh, fw] = shapes.current.get(finest)!;
-      const ff = 2 ** finest;
-      world.current = {
-        finest,
-        d: source.depthScales ? fd * ff : fd,
-        h: fh * ff,
-        w: fw * ff,
-      };
+      if (source.staticImages) {
+        // world dims from the coarsest static level
+        const coarsest = Math.max(...source.levels);
+        const dims = await new Promise<{ w: number; h: number }>((resolve, reject) => {
+          const im = new window.Image();
+          im.onload = () => {
+            staticImgs.current.set(coarsest, im);
+            resolve({ w: im.width, h: im.height });
+          };
+          im.onerror = reject;
+          im.src = source.staticImages!(coarsest);
+        });
+        if (!alive) return;
+        const cf = 2 ** coarsest;
+        world.current = { finest: Math.min(...source.levels), d: 1, h: dims.h * cf, w: dims.w * cf };
+      } else {
+        const entries = await Promise.all(
+          source.levels.map(async (l) => [l, await levelShape(source, l)] as const)
+        );
+        if (!alive) return;
+        shapes.current = new Map(entries);
+        const finest = Math.min(...source.levels);
+        const [fd, fh, fw] = shapes.current.get(finest)!;
+        const ff = 2 ** finest;
+        world.current = {
+          finest,
+          d: source.depthScales ? fd * ff : fd,
+          h: fh * ff,
+          w: fw * ff,
+        };
+      }
       setWorldDepth(world.current.d);
       const mid = Math.floor(world.current.d / 2);
       setZ(mid);
@@ -552,7 +607,10 @@ function Viewer() {
           )}
         </div>
       )}
-      <div className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2 text-sm">
+      <div
+        className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2 text-sm"
+        style={source.staticImages ? { display: "none" } : undefined}
+      >
         <span className="w-24 text-neutral-400">depth z={z}</span>
         <input
           className="flex-1 accent-amber-400"
