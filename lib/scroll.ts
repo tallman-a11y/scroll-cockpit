@@ -20,6 +20,8 @@ export interface ScrollSource {
   difficulty?: string;
   /** Source depends on this machine's disk (dev-only); hidden on public deploys. */
   localOnly?: boolean;
+  /** Base URL of a compact xyz index enabling 3D-chunk queries (see lib/chunks). */
+  chunkIndex?: string;
   /** Static single-plane source: per-level pre-rendered images instead of a
    * zarr volume (used for the public demo segment; no depth axis). */
   staticImages?: (level: number) => string;
@@ -64,6 +66,7 @@ export const SOURCES: ScrollSource[] = [
       level >= 3 && level <= 5 ? `/demo/pred_l${level}.png` : null,
     reliability: "/demo/reliability_l3.png",
     difficulty: "/demo/difficulty_l3.png",
+    chunkIndex: "/demo",
   },
 ];
 

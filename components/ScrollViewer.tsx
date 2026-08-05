@@ -6,6 +6,7 @@
 //   N/P next/prev; Delete removes; queue panel; JSON export.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TILE, getTile, levelShape, visibleSources } from "@/lib/scroll";
+import { type ChunkPatch, loadXyzIndex, maskToCanvas, queryChunk } from "@/lib/chunks";
 
 const MAX_TILES = 800;
 const MAX_INFLIGHT = 12;
@@ -30,7 +31,13 @@ function initialParams() {
   const q = new URLSearchParams(window.location.search);
   const s = Math.min(Number(q.get("source") ?? 0) || 0, visibleSources().length - 1);
   const zoom = Math.max(Number(q.get("zoom")) || 1, 0.1);
-  return { source: s, zoom, rel: q.get("rel") === "1", diff: q.get("diff") === "1" };
+  return {
+    source: s,
+    zoom,
+    rel: q.get("rel") === "1",
+    diff: q.get("diff") === "1",
+    chunk: (q.get("chunk") ?? "").replace(/,/g, " "),
+  };
 }
 
 export default function ScrollViewer() {
@@ -59,6 +66,12 @@ function Viewer() {
   diffState.current = diffVisible;
   const [marks, setMarks] = useState<Mark[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [chunkText, setChunkText] = useState(init.chunk);
+  const autoChunkDone = useRef(false);
+  const [chunkPatches, setChunkPatches] = useState<ChunkPatch[]>([]);
+  const [chunkStatus, setChunkStatus] = useState("");
+  const chunkMask = useRef<HTMLCanvasElement | null>(null);
+  const chunkScale = useRef({ x: 1, y: 1 });
 
   const view = useRef({ x: 0, y: 0, scale: 1 });
   const shapes = useRef(new Map<number, number[]>());
@@ -141,6 +154,10 @@ function Viewer() {
       if (source.difficulty && diffState.current && diffCanvas.current) {
         const dc = diffCanvas.current;
         c.drawImage(dc, 0, 0, dc.width * 8, dc.height * 8);
+      }
+      if (chunkMask.current) {
+        const cm = chunkMask.current;
+        c.drawImage(cm, 0, 0, cm.width * chunkScale.current.x, cm.height * chunkScale.current.y);
       }
       const ink = inkState.current;
       if (source.overlay && ink.visible && !flickerHeld.current) {
@@ -548,6 +565,75 @@ function Viewer() {
     };
   }, []);
 
+  const runChunkQuery = async () => {
+    if (!source.chunkIndex) return;
+    const nums = chunkText.trim().split(/[\s,;]+/).map(Number).filter((n) => !isNaN(n));
+    if (nums.length !== 6) {
+      setChunkStatus("need 6 numbers: x0 y0 z0 x1 y1 z1");
+      return;
+    }
+    setChunkStatus("querying…");
+    try {
+      const idx = await loadXyzIndex(source.chunkIndex);
+      const min: [number, number, number] = [
+        Math.min(nums[0], nums[3]),
+        Math.min(nums[1], nums[4]),
+        Math.min(nums[2], nums[5]),
+      ];
+      const max: [number, number, number] = [
+        Math.max(nums[0], nums[3]),
+        Math.max(nums[1], nums[4]),
+        Math.max(nums[2], nums[5]),
+      ];
+      const { mask, patches } = queryChunk(idx, min, max);
+      chunkMask.current = maskToCanvas(idx, mask);
+      chunkScale.current = { x: idx.fullresPerPxX, y: idx.fullresPerPxY };
+      setChunkPatches(patches);
+      setChunkStatus(
+        patches.length
+          ? `${patches.length} patch${patches.length > 1 ? "es" : ""} (wraps) intersect this chunk`
+          : "surface does not pass through this chunk"
+      );
+      if (patches.length) {
+        const [bx, by, bw, bh] = patches[0].bbox;
+        const canvas = canvasRef.current!;
+        const vs = Math.min(canvas.width / (bw * 2.5), canvas.height / (bh * 2.5));
+        view.current = {
+          scale: vs,
+          x: canvas.width / 2 - (bx + bw / 2) * vs,
+          y: canvas.height / 2 - (by + bh / 2) * vs,
+        };
+      }
+      requestAnimationFrame(drawRef.current);
+    } catch (e) {
+      setChunkStatus(`error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const runChunkQueryRef = useRef<() => void>(() => {});
+  runChunkQueryRef.current = runChunkQuery;
+
+  // auto-run ?chunk= query once the source is ready
+  useEffect(() => {
+    if (init.chunk && source.chunkIndex && worldDepth > 0 && !autoChunkDone.current) {
+      autoChunkDone.current = true;
+      setTimeout(() => runChunkQueryRef.current(), 400);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [worldDepth, sourceIdx]);
+
+  const flyToPatch = (p: ChunkPatch) => {
+    const [bx, by, bw, bh] = p.bbox;
+    const canvas = canvasRef.current!;
+    const vs = Math.min(canvas.width / (bw * 2.5), canvas.height / (bh * 2.5));
+    view.current = {
+      scale: vs,
+      x: canvas.width / 2 - (bx + bw / 2) * vs,
+      y: canvas.height / 2 - (by + bh / 2) * vs,
+    };
+    requestAnimationFrame(drawRef.current);
+  };
+
   const exportMarks = () => {
     const payload = {
       tool: "scroll-cockpit",
@@ -692,6 +778,48 @@ function Viewer() {
               </button>
             </div>
           </div>
+          {source.chunkIndex && (
+            <div className="border-b border-neutral-800 px-3 py-2 text-xs">
+              <div className="mb-1 font-medium text-neutral-300">3D chunk query</div>
+              <textarea
+                className="mb-1 w-full resize-none rounded bg-neutral-800 px-2 py-1 font-mono text-[11px] text-neutral-200"
+                rows={2}
+                placeholder="x0 y0 z0 x1 y1 z1 (volume coords)"
+                value={chunkText}
+                onChange={(e) => setChunkText(e.target.value)}
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  className="rounded bg-neutral-800 px-2 py-1 hover:bg-neutral-700"
+                  onClick={runChunkQuery}
+                >
+                  find patches
+                </button>
+                <button
+                  className="rounded bg-neutral-800 px-2 py-1 hover:bg-neutral-700"
+                  onClick={() => {
+                    chunkMask.current = null;
+                    setChunkPatches([]);
+                    setChunkStatus("");
+                    requestAnimationFrame(drawRef.current);
+                  }}
+                >
+                  clear
+                </button>
+                <span className="text-neutral-500">{chunkStatus}</span>
+              </div>
+              {chunkPatches.map((p, i) => (
+                <button
+                  key={i}
+                  className="mt-1 flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-neutral-900"
+                  onClick={() => flyToPatch(p)}
+                >
+                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+                  wrap {i + 1}: ({p.bbox[0]}, {p.bbox[1]}) {p.bbox[2]}×{p.bbox[3]}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="min-h-0 flex-1 overflow-y-auto">
             {marks.length === 0 && (
               <p className="px-3 py-4 text-xs leading-5 text-neutral-500">
