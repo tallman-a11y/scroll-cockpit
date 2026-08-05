@@ -30,7 +30,7 @@ function initialParams() {
   const q = new URLSearchParams(window.location.search);
   const s = Math.min(Number(q.get("source") ?? 0) || 0, visibleSources().length - 1);
   const zoom = Math.max(Number(q.get("zoom")) || 1, 0.1);
-  return { source: s, zoom, rel: q.get("rel") === "1" };
+  return { source: s, zoom, rel: q.get("rel") === "1", diff: q.get("diff") === "1" };
 }
 
 export default function ScrollViewer() {
@@ -53,6 +53,10 @@ function Viewer() {
   const [inkOpacity, setInkOpacity] = useState(0.7);
   const [inkVisible, setInkVisible] = useState(true);
   const [relVisible, setRelVisible] = useState(init.rel);
+  const [diffVisible, setDiffVisible] = useState(init.diff);
+  const diffCanvas = useRef<HTMLCanvasElement | null>(null);
+  const diffState = useRef(init.diff);
+  diffState.current = diffVisible;
   const [marks, setMarks] = useState<Mark[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -133,6 +137,10 @@ function Viewer() {
       if (source.reliability && relState.current && relCanvas.current) {
         const rc = relCanvas.current;
         c.drawImage(rc, 0, 0, rc.width * 8, rc.height * 8);
+      }
+      if (source.difficulty && diffState.current && diffCanvas.current) {
+        const dc = diffCanvas.current;
+        c.drawImage(dc, 0, 0, dc.width * 8, dc.height * 8);
       }
       const ink = inkState.current;
       if (source.overlay && ink.visible && !flickerHeld.current) {
@@ -367,6 +375,19 @@ function Viewer() {
           requestAnimationFrame(drawRef.current);
         };
         rim.src = source.reliability;
+      }
+      diffCanvas.current = null;
+      if (source.difficulty) {
+        const dim = new window.Image();
+        dim.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = dim.width;
+          c.height = dim.height;
+          c.getContext("2d")!.drawImage(dim, 0, 0);
+          diffCanvas.current = c;
+          requestAnimationFrame(drawRef.current);
+        };
+        dim.src = source.difficulty;
       }
 
       for (const l of [3, 4, 5]) {
@@ -603,6 +624,20 @@ function Viewer() {
                 }}
               />
               reliability
+            </label>
+          )}
+          {source.difficulty && (
+            <label className="flex items-center gap-2 text-fuchsia-400">
+              <input
+                type="checkbox"
+                className="accent-fuchsia-400"
+                checked={diffVisible}
+                onChange={(e) => {
+                  setDiffVisible(e.target.checked);
+                  requestAnimationFrame(drawRef.current);
+                }}
+              />
+              difficulty (mesh curvature+compression)
             </label>
           )}
         </div>

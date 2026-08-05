@@ -15,6 +15,9 @@ export interface ScrollSource {
   overlay?: (level: number) => string | null;
   /** Optional reliability heatmap PNG (level-3 aligned, world scale 8x). */
   reliability?: string;
+  /** Optional mesh-derived difficulty heatmap PNG (level-3 aligned, 8x):
+   * curvature + compression = where surface models fail. */
+  difficulty?: string;
   /** Source depends on this machine's disk (dev-only); hidden on public deploys. */
   localOnly?: boolean;
   /** Static single-plane source: per-level pre-rendered images instead of a
@@ -47,6 +50,7 @@ export const SOURCES: ScrollSource[] = [
     overlay: (level) =>
       level >= 3 && level <= 5 ? `/api/data/pred_pyramid/l${level}.png` : null,
     reliability: "/api/data/reliability/l3.png",
+    difficulty: "/api/data/reliability/difficulty_l3.png",
   },
   {
     // Public ink-review demo: pre-rendered surface plane (z=32) + our model's
@@ -59,6 +63,7 @@ export const SOURCES: ScrollSource[] = [
     overlay: (level) =>
       level >= 3 && level <= 5 ? `/demo/pred_l${level}.png` : null,
     reliability: "/demo/reliability_l3.png",
+    difficulty: "/demo/difficulty_l3.png",
   },
 ];
 
